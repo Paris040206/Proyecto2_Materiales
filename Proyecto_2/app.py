@@ -13,8 +13,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats
+from pathlib import Path
 
-ARCHIVO = "Steel-_Property_and_Composition__Carbon_Steel_.csv"
+ARCHIVO = next(Path(__file__).parent.glob("*.csv"))
 
 PROPIEDADES = {
     "UTS": "Resistencia última a la tensión, UTS (MPa)",
@@ -98,11 +99,18 @@ st.caption("Composición química, procesamiento y propiedades mecánicas")
 df = cargar_datos()
 
 st.sidebar.header("Filtros")
-condiciones = st.sidebar.multiselect(
+
+opciones = sorted(df["Condicion"].unique())
+conteo = df["Condicion"].value_counts()
+
+condiciones = st.sidebar.pills(
     "Condición de procesamiento",
-    options=sorted(df["Condicion"].unique()),
-    default=sorted(df["Condicion"].unique()),
+    options=opciones,
+    selection_mode="multi",
+    default=opciones,
+    format_func=lambda c: f"{c} ({conteo[c]})",
 )
+
 c_min_global = float(df["C_prom"].min())
 c_max_global = float(df["C_prom"].max())
 rango_c = st.sidebar.slider(
@@ -214,8 +222,28 @@ with tabs[3]:
 # ============================================================
 with tabs[4]:
     st.subheader("ANOVA de un factor: ¿la condición afecta la propiedad?")
+
+    with st.expander("❓ ¿Qué es el ANOVA? (explicación sencilla)"):
+        st.markdown("""
+El ANOVA responde una pregunta: **¿las diferencias entre los promedios de varios grupos
+son reales, o podrían ser pura casualidad?**
+
+Aquí los grupos son las condiciones de procesamiento (recocido, estirado en frío, etc.)
+y comparamos el promedio de la propiedad elegida.
+
+**Cómo leer el resultado:**
+1. Mira el **valor p**. Si es **menor a 0.05**, hay diferencias reales entre grupos.
+   Si es **0.05 o mayor**, no hay evidencia suficiente para afirmarlo.
+2. Revisa si las pruebas de **Levene** y **Kruskal-Wallis** apoyan la conclusión.
+3. Lee la sección "En palabras sencillas" y las advertencias antes de concluir.
+        """)
+
     prop4 = st.selectbox("Propiedad   ", list(PROPIEDADES),
                          format_func=PROPIEDADES.get, key="prop_anova")
+
+    nombres = {"UTS": "la resistencia última (UTS)", "YS": "el esfuerzo de fluencia (YS)",
+               "Dureza": "la dureza", "Elongacion": "la elongación"}
+    unidades = {"UTS": "MPa", "YS": "MPa", "Dureza": "HB", "Elongacion": "%"}
 
     # Solo grupos con al menos 3 datos
     grupos = {nombre: g[prop4].dropna().values
@@ -229,20 +257,67 @@ with tabs[4]:
         h, p_kw = stats.kruskal(*grupos.values())
         _, p_lev = stats.levene(*grupos.values())
 
+        # ---------- Resultado formal ----------
+        st.markdown("#### 📐 Resultado formal")
         c1, c2, c3 = st.columns(3)
         c1.metric("ANOVA: F", f"{f:.2f}")
         c2.metric("ANOVA: valor p", f"{p:.4g}")
         c3.metric("Levene (varianzas): p", f"{p_lev:.4g}")
         st.write(f"Prueba alternativa Kruskal-Wallis: valor p = {p_kw:.4g}")
 
+        # ---------- Resultado en palabras sencillas ----------
+        st.markdown("#### 🗣️ En palabras sencillas")
+        medias = {nombre: valores.mean() for nombre, valores in grupos.items()}
+        mayor = max(medias, key=medias.get)
+        menor = min(medias, key=medias.get)
+        nombre_prop = nombres[prop4]
+        unidad = unidades[prop4]
+
         if p < 0.05:
-            st.success("Hay diferencias significativas entre al menos dos condiciones (p < 0.05).")
+            st.success(
+                f"**Sí, la condición de procesamiento parece influir en {nombre_prop}.** "
+                f"Las diferencias entre grupos son demasiado grandes para explicarse "
+                f"solo por casualidad. El promedio más alto es el de **{mayor}** "
+                f"({medias[mayor]:.1f} {unidad}) y el más bajo el de **{menor}** "
+                f"({medias[menor]:.1f} {unidad}).")
         else:
-            st.info("No se detectan diferencias significativas (p ≥ 0.05).")
+            st.info(
+                f"**No hay evidencia suficiente de que la condición afecte {nombre_prop}.** "
+                f"Las diferencias que se ven entre grupos podrían deberse al azar. "
+                f"Ojo: esto no prueba que no haya efecto, solo que estos datos no lo muestran.")
+
+        # Gráfica de promedios por grupo (con desviación estándar)
+        tabla = pd.DataFrame({
+            "Condición": list(grupos.keys()),
+            "Promedio": [v.mean() for v in grupos.values()],
+            "Desv. estándar": [v.std() for v in grupos.values()],
+            "n": [len(v) for v in grupos.values()],
+        })
+        fig = px.bar(tabla, x="Condición", y="Promedio", error_y="Desv. estándar",
+                     color="Condición", text="n",
+                     labels={"Promedio": f"{PROPIEDADES[prop4]} (promedio)"})
+        fig.update_traces(texttemplate="n = %{text}", textposition="inside")
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Las barras muestran el promedio de cada grupo; las líneas, la dispersión "
+                   "(desviación estándar). Si los grupos se traslapan mucho, la diferencia es poco clara.")
+
+        # ---------- Advertencias para concluir correctamente ----------
+        st.markdown("#### ⚠️ Antes de concluir")
         if p_lev < 0.05:
-            st.warning("Las varianzas no son homogéneas: el ANOVA clásico es cuestionable.")
-        st.caption("Ojo: los datos son valores nominales de manual, no réplicas "
-                   "experimentales; la independencia de las observaciones es discutible.")
+            st.warning("Las varianzas de los grupos son muy distintas (Levene p < 0.05): "
+                       "el ANOVA clásico es menos confiable. Apóyate más en Kruskal-Wallis.")
+        if (p < 0.05) != (p_kw < 0.05):
+            st.warning("ANOVA y Kruskal-Wallis no coinciden. La conclusión no es sólida; "
+                       "preséntala con cautela.")
+        st.markdown("""
+- El ANOVA dice que **al menos un grupo** es distinto, pero **no dice cuáles** ni prueba la causa.
+- Cada condición incluye aceros con distinto %C, y el carbono también cambia las propiedades. 
+  Parte de la diferencia puede deberse al carbono y no al proceso.
+- Los datos son valores nominales de manual, no mediciones repetidas.
+- Que sea estadísticamente significativo no significa que importe en ingeniería: 
+  mira cuántos {} cambia el valor.
+        """.format(unidad))
 
 # ============================================================
 # 8. PESTAÑA: BUSCADOR DE ACERO (propuesta propia)
