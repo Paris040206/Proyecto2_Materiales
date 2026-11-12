@@ -13,8 +13,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats
+from pathlib import Path
 
-ARCHIVO = "Steel-_Property_and_Composition__Carbon_Steel_.csv"
+ARCHIVO = next(Path(__file__).parent.glob("*.csv"))
 
 PROPIEDADES = {
     "UTS": "Resistencia última a la tensión, UTS (MPa)",
