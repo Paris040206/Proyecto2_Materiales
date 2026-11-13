@@ -148,12 +148,13 @@ with tabs[0]:
 - **Elongación (%):** medida de ductilidad.
     """)
 
-    with st.expander("Decisiones de limpieza (completar después)"):
+    with st.expander("Decisiones de limpieza"):
         st.markdown("""
-- Las 46 etiquetas de condición se agruparon en pocas categorías y se corrigieron errores de captura.
-- Valores con coma decimal se convirtieron a punto.
-- Dureza en escala HRB se excluyó para no mezclar escalas.
-- El %C se tomó como el punto medio del rango mínimo-máximo.
+- **Agrupación de condiciones:** Las 46 etiquetas originales se simplificaron en categorías (Recocido, Normalizado, Estirado en frío, etc.) y se corrigieron errores de captura ("Cold Orawn", "Hot rotted"). Las combinaciones con estirado en frío se separaron como categorías propias para no mezclar efectos.
+- **Separador decimal:** Se reemplazaron las comas por puntos en "Reducción" para que Python las lea como números.
+- **Dureza:** Los registros en Rockwell B (HRB) se dejaron vacíos para mantener una sola escala (Brinell, HB).
+- **Contenido de carbono (%C):** Se corrigió un error de escala evidente (C = 15 en el acero 12L14, que corresponde a 0.15) y se usó el punto medio entre el mínimo y el máximo como valor representativo. Cuando falta el mínimo, se usa solo el máximo.
+- **ANOVA:** Solo se incluyen grupos con al menos 3 registros, por lo que las categorías muy pequeñas quedan fuera.
         """)
 
     st.dataframe(dff, use_container_width=True)
@@ -179,8 +180,13 @@ with tabs[1]:
     if len(datos) > 2:
         r, p = stats.pearsonr(datos["C_prom"], datos[prop])
         st.write(f"Correlación de Pearson: **r = {r:.2f}** (valor p = {p:.4f})")
-    st.info("💡 Interpretación (completar): más carbono → más perlita → "
-            "mayor UTS y dureza, pero menor elongación.")
+
+    st.info("💡 **Interpretación de ingeniería:** Al aumentar el %C aumenta la fracción de perlita "
+            "(laminillas de ferrita y cementita) en la microestructura. La cementita y las interfaces "
+            "ferrita/cementita obstaculizan el movimiento de las dislocaciones, por lo que suben la UTS, "
+            "el YS y la dureza, mientras que la elongación disminuye. En los datos la tendencia es clara "
+            "pero con dispersión (correlación moderada), porque en una misma gráfica se mezclan aceros con "
+            "distinto procesamiento. Usa el filtro de condición para ver la tendencia dentro de un solo proceso.")
 
 # ============================================================
 # 5. PESTAÑA: PROCESAMIENTO
@@ -197,9 +203,16 @@ with tabs[2]:
     resumen = dff.groupby("Condicion")[prop2].agg(["count", "mean", "std"]).round(1)
     resumen.columns = ["n", "media", "desv. estándar"]
     st.dataframe(resumen, use_container_width=True)
-    st.info("💡 Interpretación (completar): el estirado en frío endurece por "
-            "deformación (sube YS y UTS, baja elongación); el recocido ablanda; "
-            "el normalizado refina el grano.")
+
+    st.info("💡 **Interpretación de ingeniería:** El procesamiento define la microestructura final. "
+            "El **estirado en frío** endurece por deformación (multiplicación y enredo de dislocaciones): "
+            "sube el YS y baja la elongación. En estos datos la UTS casi no cambia respecto al laminado en "
+            "caliente porque el grupo estirado en frío tiene, en promedio, menos %C (variable confusora). "
+            "El **recocido** produce granos grandes y elimina tensiones residuales, dando aceros blandos y "
+            "los más dúctiles. El **normalizado**, al enfriar al aire, refina el tamaño de grano "
+            "(endurecimiento de Hall-Petch) y logra mayor resistencia que el recocido con buena ductilidad. "
+            "El **templado y revenido** alcanza las resistencias más altas por la martensita revenida, "
+            "a costa de menor ductilidad.")
 
 # ============================================================
 # 6. PESTAÑA: RECOCIDO VS NORMALIZADO
@@ -214,8 +227,14 @@ with tabs[3]:
                      labels={"C_prom": "%C (punto medio)", prop3: PROPIEDADES[prop3]})
     st.plotly_chart(fig, use_container_width=True)
     st.write(sub.groupby("Condicion")[prop3].agg(["count", "mean"]).round(1))
-    st.warning("⚠️ Limitaciones (completar): pocos registros por grupo, aceros "
-               "distintos en cada grupo y temperaturas de tratamiento diferentes.")
+
+    st.warning("⚠️ **Limitaciones del análisis:** La teoría indica que el normalizado produce mayor "
+               "resistencia por el afino de grano, pero esta comparación tiene límites. No estamos "
+               "comparando el *mismo* grado SAE con distinto tratamiento, sino conjuntos diferentes de "
+               "aceros en cada categoría, así que parte de la diferencia puede deberse a la composición. "
+               "Aquí ambos grupos tienen un tamaño similar (unos 20 registros) y un %C promedio casi igual, "
+               "lo que ayuda, pero no elimina el problema. Además no se conocen las temperaturas ni los "
+               "tamaños de sección de cada tratamiento, y los valores son nominales de manual, no mediciones repetidas.")
 
 # ============================================================
 # 7. PESTAÑA: ANOVA
@@ -312,10 +331,10 @@ y comparamos el promedio de la propiedad elegida.
                        "preséntala con cautela.")
         st.markdown("""
 - El ANOVA dice que **al menos un grupo** es distinto, pero **no dice cuáles** ni prueba la causa.
-- Cada condición incluye aceros con distinto %C, y el carbono también cambia las propiedades. 
+- Cada condición incluye aceros con distinto %C, y el carbono también cambia las propiedades.
   Parte de la diferencia puede deberse al carbono y no al proceso.
 - Los datos son valores nominales de manual, no mediciones repetidas.
-- Que sea estadísticamente significativo no significa que importe en ingeniería: 
+- Que sea estadísticamente significativo no significa que importe en ingeniería:
   mira cuántos {} cambia el valor.
         """.format(unidad))
 
