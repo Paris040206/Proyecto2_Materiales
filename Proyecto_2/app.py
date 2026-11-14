@@ -17,6 +17,7 @@ from sklearn.linear_model import LinearRegression
 from pathlib import Path
 
 ARCHIVO = next(Path(__file__).parent.glob("*.csv"))
+NAN = float("nan")
 
 PROPIEDADES = {
     "UTS": "Resistencia última a la tensión, UTS (MPa)",
@@ -24,6 +25,11 @@ PROPIEDADES = {
     "Dureza": "Dureza (HB)",
     "Elongacion": "Elongación (%)",
 }
+NOMBRES_CORTOS = {"UTS": "UTS", "YS": "YS", "Dureza": "dureza", "Elongacion": "elongación"}
+UNIDADES = {"UTS": "MPa", "YS": "MPa", "Dureza": "HB", "Elongacion": "%"}
+
+# Rangos razonables para aceptar un dato nuevo (evita errores de captura)
+LIMITES = {"UTS": (100, 2500), "YS": (50, 2500), "Dureza": (50, 700), "Elongacion": (1, 60)}
 
 
 # ============================================================
@@ -90,6 +96,79 @@ def cargar_datos():
 
 
 # ============================================================
+# 1b. AYUDAS PARA AGREGAR MATERIALES NUEVOS
+# ============================================================
+
+# --- INICIO AYUDAS ---
+def validar_nuevo(sae, c, valores):
+    """Devuelve la lista de errores del registro nuevo (vacía si es válido)."""
+    errores = []
+    if sae == "":
+        errores.append("Escribe el grado SAE o el nombre del acero.")
+
+    if c is None:
+        errores.append("El % de carbono es obligatorio: sin él, el dato no entra a las "
+                       "gráficas de carbono ni a la predicción.")
+    elif not 0.01 <= c <= 1.10:
+        errores.append("El %C debe estar entre 0.01 y 1.10 (aceros al carbono).")
+
+    dados = {k: v for k, v in valores.items() if v is not None}
+    if len(dados) < 2:
+        errores.append(f"Captura al menos 2 de las 4 propiedades (ahora hay {len(dados)}). "
+                       "Con menos datos, el registro casi no aporta a ninguna comparación "
+                       "ni al ANOVA.")
+    for nombre, valor in dados.items():
+        bajo, alto = LIMITES[nombre]
+        if not bajo <= valor <= alto:
+            errores.append(f"{nombre} = {valor} {UNIDADES[nombre]} está fuera del rango "
+                           f"razonable ({bajo} a {alto} {UNIDADES[nombre]}).")
+    if "UTS" in dados and "YS" in dados and dados["YS"] > dados["UTS"]:
+        errores.append("El YS no puede ser mayor que la UTS.")
+    return errores
+
+
+def es_duplicado(df, sae, condicion, valores):
+    """True si ya existe un registro con el mismo acero, condición y valores."""
+    candidatos = df[(df["SAE"].str.lower() == sae.lower()) & (df["Condicion"] == condicion)]
+    for nombre, valor in valores.items():
+        if valor is not None:
+            candidatos = candidatos[candidatos[nombre] == valor]
+    return len(candidatos) > 0
+
+
+def resumen_impacto(df_todo, fila):
+    """Explica en qué análisis entra (o no) el registro recién agregado."""
+    condicion = fila["Condicion"]
+    grupo = df_todo[df_todo["Condicion"] == condicion]
+    lineas = []
+
+    for nombre, nombre_corto in NOMBRES_CORTOS.items():
+        if pd.isna(fila[nombre]):
+            continue
+        n = int(grupo[nombre].notna().sum())
+        if n >= 3:
+            lineas.append(f"✅ **ANOVA de {nombre_corto}:** el dato se suma al grupo "
+                          f"«{condicion}» ({n} registros).")
+        else:
+            lineas.append(f"⚠️ **ANOVA de {nombre_corto}:** el grupo «{condicion}» solo tiene "
+                          f"{n} registro(s) con este dato; el ANOVA exige al menos 3, así que "
+                          f"ese grupo todavía no entra a la prueba.")
+
+    lineas.append("✅ **%C vs propiedades y Procesamiento:** el dato aparece en las gráficas "
+                  "(si los filtros de la barra lateral lo incluyen).")
+
+    n_modelo = len(grupo.dropna(subset=["C_prom", "UTS", "YS"]))
+    if pd.notna(fila["UTS"]) and pd.notna(fila["YS"]) and n_modelo > 3:
+        lineas.append(f"✅ **Predicción:** entra al entrenamiento del modelo de «{condicion}» "
+                      f"({n_modelo} registros).")
+    else:
+        lineas.append("⚠️ **Predicción:** no entra al modelo (necesita UTS y YS, y más de 3 "
+                      "registros completos en esa condición).")
+    return "\n\n".join(lineas)
+# --- FIN AYUDAS ---
+
+
+# ============================================================
 # 2. CONFIGURACIÓN DE LA PÁGINA Y BARRA LATERAL
 # ============================================================
 
@@ -97,7 +176,19 @@ st.set_page_config(page_title="Aceros al carbono", page_icon="🔩", layout="wid
 st.title("🔩 Explorador de aceros al carbono")
 st.caption("Composición química, procesamiento y propiedades mecánicas")
 
-df = cargar_datos()
+# Datos originales + materiales que el usuario agregó en esta sesión
+df_base = cargar_datos().assign(Origen="Dataset original")
+df_base["SAE"] = df_base["SAE"].astype(str)
+
+if "nuevos" not in st.session_state:
+    st.session_state["nuevos"] = []
+if "form_n" not in st.session_state:
+    st.session_state["form_n"] = 0
+
+if st.session_state["nuevos"]:
+    df = pd.concat([df_base, pd.DataFrame(st.session_state["nuevos"])], ignore_index=True)
+else:
+    df = df_base
 
 st.sidebar.header("Filtros")
 
@@ -159,6 +250,96 @@ with tabs[0]:
 - **ANOVA:** Solo se incluyen grupos con al menos 3 registros, por lo que las categorías muy pequeñas quedan fuera.
         """)
 
+    # ---------- Agregar un material nuevo ----------
+    st.markdown("---")
+    st.subheader("➕ Agregar un material nuevo")
+
+    aviso = st.session_state.pop("aviso", None)
+    if aviso:
+        st.success(aviso["titulo"])
+        st.markdown(aviso["detalle"])
+
+    with st.expander("Formulario para registrar un acero"):
+        st.markdown("""
+**Reglas mínimas para que el dato sirva en el análisis:**
+- **Obligatorios:** nombre o grado del acero, condición de procesamiento y %C. Sin %C el dato
+  no puede entrar a las gráficas de carbono ni a la predicción.
+- **Propiedades:** captura al menos **2 de las 4** (UTS, YS, dureza, elongación). El resto puede
+  quedar vacío.
+- **Por qué:** el ANOVA compara promedios por condición y necesita al menos **3 registros con la
+  propiedad medida** en cada grupo. Un registro casi vacío no aporta a ningún grupo y solo
+  ensucia las gráficas. Al guardar, te indico en qué análisis entra tu dato.
+- Los valores deben estar en rangos razonables y el YS no puede superar a la UTS.
+        """)
+
+        n = st.session_state["form_n"]  # al cambiar, el formulario se limpia
+        with st.form(f"form_nuevo_{n}"):
+            f1, f2, f3 = st.columns(3)
+            sae_nuevo = f1.text_input("Grado SAE o nombre del acero *",
+                                      placeholder="ej. 1045", key=f"sae_{n}")
+            cond_nueva = f2.selectbox("Condición de procesamiento *",
+                                      sorted(df["Condicion"].unique()), key=f"cond_{n}")
+            c_nuevo = f3.number_input("% de carbono *", min_value=0.0, value=None,
+                                      step=0.01, format="%.3f", key=f"c_{n}")
+
+            g1, g2, g3, g4 = st.columns(4)
+            uts_n = g1.number_input("UTS (MPa)", min_value=0.0, value=None,
+                                    step=10.0, key=f"uts_{n}")
+            ys_n = g2.number_input("YS (MPa)", min_value=0.0, value=None,
+                                   step=10.0, key=f"ys_{n}")
+            dureza_n = g3.number_input("Dureza (HB)", min_value=0.0, value=None,
+                                       step=5.0, key=f"dur_{n}")
+            elong_n = g4.number_input("Elongación (%)", min_value=0.0, value=None,
+                                      step=1.0, key=f"elo_{n}")
+            enviar = st.form_submit_button("Agregar material")
+
+        if enviar:
+            sae = sae_nuevo.strip()
+            valores = {"UTS": uts_n, "YS": ys_n, "Dureza": dureza_n, "Elongacion": elong_n}
+            errores = validar_nuevo(sae, c_nuevo, valores)
+
+            if errores:
+                st.error("No se agregó el material. Corrige lo siguiente:")
+                for e in errores:
+                    st.write(f"- {e}")
+            elif es_duplicado(df, sae, cond_nueva, valores):
+                st.warning("Ya existe un registro con ese acero, esa condición y esos valores. "
+                           "Agregarlo no cambiaría ningún resultado, así que no se guardó.")
+            else:
+                fila = {
+                    "SAE": sae,
+                    "Condicion_original": "Agregado por el usuario",
+                    "UTS": NAN if uts_n is None else uts_n,
+                    "YS": NAN if ys_n is None else ys_n,
+                    "Elongacion": NAN if elong_n is None else elong_n,
+                    "Reduccion": NAN,
+                    "Dureza": NAN if dureza_n is None else dureza_n,
+                    "C_min": c_nuevo, "C_max": c_nuevo, "C_prom": c_nuevo,
+                    "Condicion": cond_nueva,
+                    "Origen": "Agregado por el usuario",
+                }
+                df_todo = pd.concat([df, pd.DataFrame([fila])], ignore_index=True)
+                st.session_state["aviso"] = {
+                    "titulo": f"✅ Material «{sae}» agregado en la condición «{cond_nueva}».",
+                    "detalle": "**Impacto en el análisis:**\n\n" + resumen_impacto(df_todo, fila),
+                }
+                st.session_state["nuevos"].append(fila)
+                st.session_state["form_n"] += 1
+                st.rerun()
+
+    if st.session_state["nuevos"]:
+        nuevos_df = pd.DataFrame(st.session_state["nuevos"])
+        st.info(f"Has agregado **{len(nuevos_df)}** registro(s) en esta sesión. "
+                "Solo viven en esta sesión: se pierden al recargar la página.")
+        b1, b2 = st.columns(2)
+        b1.download_button("⬇️ Descargar mis registros (CSV)",
+                           nuevos_df.to_csv(index=False).encode("utf-8"),
+                           file_name="materiales_agregados.csv", mime="text/csv")
+        if b2.button("🗑️ Borrar registros agregados"):
+            st.session_state["nuevos"] = []
+            st.rerun()
+
+    st.markdown("---")
     st.dataframe(dff, use_container_width=True)
     st.write("Registros por condición:")
     st.bar_chart(df["Condicion"].value_counts())
@@ -195,6 +376,76 @@ with tabs[1]:
 # ============================================================
 with tabs[2]:
     st.subheader("Comparación entre condiciones de procesamiento")
+
+    with st.expander("📘 ¿En qué consiste cada proceso? (explicación sencilla)"):
+        st.markdown("""
+Un acero no solo depende de **qué lleva** (su composición), sino de **cómo se trabajó**.
+Calentarlo, enfriarlo o deformarlo cambia la forma en que se acomodan sus cristales
+(su *microestructura*), y eso cambia qué tan fuerte, duro o flexible es.
+
+**Dos ideas para recordar:**
+- **Enfriar más rápido → acero más duro y resistente, pero más frágil.**
+- **Deformarlo en frío → acero más duro y resistente, pero menos flexible.**
+
+---
+
+**🔥 Laminado en caliente**
+El acero se calienta al rojo vivo (alrededor de 1000 °C o más) y se hace pasar entre rodillos
+que lo aplastan hasta darle forma de barra, placa o perfil. Estando tan caliente, el metal se
+deforma con facilidad y sus cristales se reacomodan solos, así que **no queda endurecido**.
+Es el proceso más común y barato; deja una superficie algo rugosa y medidas menos precisas.
+*Analogía: estirar una masa tibia con un rodillo de cocina.*
+
+**🧵 Estirado en frío**
+Una barra ya formada se jala, **a temperatura ambiente**, a través de un agujero más pequeño
+(un dado). Al no calentarse, los cristales quedan "apretados y enredados": el acero sale más
+**duro y resistente**, pero **pierde parte de su capacidad de estirarse**. Además queda con
+acabado liso y medidas muy precisas.
+*Analogía: doblar un clip de metal varias veces: se vuelve más rígido y al final se rompe.*
+
+**🛋️ Recocido**
+Se calienta el acero (en estos datos, entre 800 y 915 °C), se mantiene un tiempo y se
+**enfría muy lentamente**, por ejemplo dejándolo dentro del horno apagado. El resultado es un
+acero **blando y flexible**, sin tensiones internas y fácil de maquinar.
+*Analogía: dejar que un músculo tenso se relaje por completo.*
+
+**🌬️ Normalizado**
+Parecido al recocido, pero calentando un poco más y **enfriando al aire libre**, que es más
+rápido que dentro de un horno. Ese enfriamiento más rápido forma **granos más finos y
+uniformes**, lo que da más resistencia que el recocido sin volver el acero muy frágil.
+*Analogía: la misma receta que el recocido, pero sacándolo a enfriar a la mesa.*
+
+**💧 Templado y revenido** (dos pasos)
+1. **Temple:** se calienta el acero (800 a 885 °C en estos datos) y se **enfría de golpe** en
+   agua o aceite. Se forma una estructura llamada martensita, **muy dura pero frágil**.
+2. **Revenido:** se recalienta a una temperatura mucho menor (540 °C en estos datos) y se deja
+   enfriar. Así se recupera algo de flexibilidad sin perder demasiada resistencia.
+
+Es el tratamiento que logra las resistencias más altas de la base de datos.
+*Analogía: primero se "congela" una estructura muy dura y rígida, y luego se "alivia" un poco.*
+
+**🔗 Combinaciones**
+- **Recocido + estirado en frío:** primero se ablanda el acero (en 12 de los 21 registros con
+  *recocido esferoidizante*, donde el carbono se acomoda en pequeñas esferas que facilitan
+  deformarlo) y luego se estira en frío para darle medidas precisas y subir su resistencia.
+- **Normalizado + estirado en frío:** lo mismo, partiendo de un acero normalizado. Tiene solo
+  2 registros, por lo que no alcanza para análisis estadísticos.
+        """)
+
+        resumen_procesos = pd.DataFrame({
+            "Proceso": ["Laminado en caliente", "Estirado en frío", "Recocido",
+                        "Normalizado", "Templado y revenido"],
+            "¿Se calienta?": ["Sí, muy caliente", "No (temperatura ambiente)", "Sí",
+                              "Sí", "Sí (y luego se recalienta)"],
+            "¿Cómo se enfría o se trabaja?": ["Rodillos que lo aplastan", "Se jala por un dado",
+                                              "Enfriamiento muy lento (horno)",
+                                              "Enfriamiento al aire", "Enfriamiento muy rápido (agua o aceite)"],
+            "Efecto típico": ["Resistencia media, buena ductilidad", "Más resistente, menos dúctil",
+                              "El más blando y dúctil", "Más resistente que el recocido",
+                              "El más duro y resistente"],
+        })
+        st.dataframe(resumen_procesos, use_container_width=True, hide_index=True)
+
     prop2 = st.selectbox("Propiedad ", list(PROPIEDADES),
                          format_func=PROPIEDADES.get, key="prop_proc")
     fig = px.box(dff, x="Condicion", y=prop2, color="Condicion", points="all",
@@ -264,7 +515,7 @@ y comparamos el promedio de la propiedad elegida.
 
     nombres = {"UTS": "la resistencia última (UTS)", "YS": "el esfuerzo de fluencia (YS)",
                "Dureza": "la dureza", "Elongacion": "la elongación"}
-    unidades = {"UTS": "MPa", "YS": "MPa", "Dureza": "HB", "Elongacion": "%"}
+    unidad = UNIDADES[prop4]
 
     # Solo grupos con al menos 3 datos
     grupos = {nombre: g[prop4].dropna().values
@@ -292,7 +543,6 @@ y comparamos el promedio de la propiedad elegida.
         mayor = max(medias, key=medias.get)
         menor = min(medias, key=medias.get)
         nombre_prop = nombres[prop4]
-        unidad = unidades[prop4]
 
         if p < 0.05:
             st.success(
@@ -331,14 +581,14 @@ y comparamos el promedio de la propiedad elegida.
         if (p < 0.05) != (p_kw < 0.05):
             st.warning("ANOVA y Kruskal-Wallis no coinciden. La conclusión no es sólida; "
                        "preséntala con cautela.")
-        st.markdown("""
+        st.markdown(f"""
 - El ANOVA dice que **al menos un grupo** es distinto, pero **no dice cuáles** ni prueba la causa.
 - Cada condición incluye aceros con distinto %C, y el carbono también cambia las propiedades.
   Parte de la diferencia puede deberse al carbono y no al proceso.
 - Los datos son valores nominales de manual, no mediciones repetidas.
 - Que sea estadísticamente significativo no significa que importe en ingeniería:
-  mira cuántos {} cambia el valor.
-        """.format(unidad))
+  mira cuántos {unidad} cambia el valor.
+        """)
 
 # ============================================================
 # 8. PESTAÑA: BUSCADOR DE ACERO (propuesta propia)
@@ -378,7 +628,6 @@ with tabs[5]:
     radar.update_layout(polar=dict(radialaxis=dict(range=[0, 1])))
     st.plotly_chart(radar, use_container_width=True)
     st.caption("Cada propiedad está dividida entre su máximo en la base de datos (escala 0 a 1).")
-
 
 # ============================================================
 # 9. PESTAÑA: MODELO PREDICTIVO
