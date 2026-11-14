@@ -170,7 +170,7 @@ def resumen_impacto(df_todo, fila):
 
 
 # ============================================================
-# 1c. PORTADA (se muestra en la primera pestaña)
+# 1c. PORTADA (pantalla de inicio de la app)
 # ============================================================
 
 # Para que los escudos no dependan de internet, guarda las imágenes en esta misma
@@ -236,8 +236,27 @@ def construir_portada():
 # ============================================================
 
 st.set_page_config(page_title="Aceros al carbono", page_icon="🔩", layout="wide")
-st.title("🔩 Explorador de aceros al carbono")
-st.caption("Composición química, procesamiento y propiedades mecánicas")
+
+# Pantalla actual: primero la portada; al entrar se muestra la aplicación
+if "vista" not in st.session_state:
+    st.session_state["vista"] = "portada"
+
+if st.session_state["vista"] == "portada":
+    st.html(construir_portada())
+    st.write("")
+    _, centro, _ = st.columns([1, 1, 1])
+    if centro.button("Entrar a la aplicación →", type="primary", use_container_width=True):
+        st.session_state["vista"] = "app"
+        st.rerun()
+    st.stop()  # no se muestra nada más mientras estés en la portada
+
+# Encabezado de la aplicación, con el botón para volver a la portada
+col_titulo, col_volver = st.columns([4, 1])
+col_titulo.title("🔩 Explorador de aceros al carbono")
+col_titulo.caption("Composición química, procesamiento y propiedades mecánicas")
+if col_volver.button("↩ Volver a la portada", use_container_width=True):
+    st.session_state["vista"] = "portada"
+    st.rerun()
 
 # Datos originales + materiales que el usuario agregó en esta sesión
 df_base = cargar_datos().assign(Origen="Dataset original")
@@ -279,17 +298,11 @@ if len(dff) == 0:
     st.warning("Los filtros no dejan ningún registro. Amplía la selección.")
     st.stop()
 
-tab_portada, *tabs = st.tabs([
-    "🎓 Portada", "📋 Datos", "📈 %C vs propiedades", "⚙️ Procesamiento",
+tabs = st.tabs([
+    "📋 Datos", "📈 %C vs propiedades", "⚙️ Procesamiento",
     "🔥 Recocido vs normalizado", "📊 ANOVA", "🔎 Buscador de acero",
     "🤖 Predicción",
 ])
-
-# ============================================================
-# 2b. PESTAÑA: PORTADA
-# ============================================================
-with tab_portada:
-    st.html(construir_portada())
 
 # ============================================================
 # 3. PESTAÑA: DATOS
