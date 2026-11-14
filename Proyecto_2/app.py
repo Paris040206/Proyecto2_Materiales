@@ -2,7 +2,7 @@
 Explorador de aceros al carbono - Proyecto 2 (Ingeniería de materiales)
 
 Cómo correrlo:
-    pip install streamlit pandas plotly scipy statsmodels
+    pip install -r requirements.txt
     streamlit run app.py
 
 El CSV debe estar en la misma carpeta que este archivo.
@@ -13,6 +13,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats
+from sklearn.linear_model import LinearRegression
 from pathlib import Path
 
 ARCHIVO = next(Path(__file__).parent.glob("*.csv"))
@@ -127,6 +128,7 @@ if len(dff) == 0:
 tabs = st.tabs([
     "📋 Datos", "📈 %C vs propiedades", "⚙️ Procesamiento",
     "🔥 Recocido vs normalizado", "📊 ANOVA", "🔎 Buscador de acero",
+    "🤖 Predicción",
 ])
 
 # ============================================================
@@ -376,3 +378,70 @@ with tabs[5]:
     radar.update_layout(polar=dict(radialaxis=dict(range=[0, 1])))
     st.plotly_chart(radar, use_container_width=True)
     st.caption("Cada propiedad está dividida entre su máximo en la base de datos (escala 0 a 1).")
+
+
+# ============================================================
+# 9. PESTAÑA: MODELO PREDICTIVO
+# ============================================================
+with tabs[6]:
+    st.subheader("🤖 Predicción de propiedades mecánicas")
+    st.write("Estima la UTS y el YS de un acero al carbono a partir de su %C "
+             "y su condición de procesamiento.")
+
+    df_ml = df.dropna(subset=["C_prom", "Condicion", "UTS", "YS"])
+
+    col1, col2 = st.columns(2)
+    cond_pred = col1.selectbox("Condición de procesamiento",
+                               sorted(df_ml["Condicion"].unique()), key="ml_cond")
+    c_pred = col2.number_input("% de carbono (ej. 0.45 para un 1045)",
+                               min_value=0.05, max_value=1.10, value=0.45, step=0.01)
+
+    df_train = df_ml[df_ml["Condicion"] == cond_pred]
+
+    if len(df_train) > 3:
+        X = df_train[["C_prom"]]
+        modelo_uts = LinearRegression().fit(X, df_train["UTS"])
+        modelo_ys = LinearRegression().fit(X, df_train["YS"])
+
+        nuevo = pd.DataFrame({"C_prom": [c_pred]})
+        uts_pred = modelo_uts.predict(nuevo)[0]
+        ys_pred = modelo_ys.predict(nuevo)[0]
+        r2_uts = modelo_uts.score(X, df_train["UTS"])
+        r2_ys = modelo_ys.score(X, df_train["YS"])
+
+        st.success(f"**Resultados estimados para %C = {c_pred:.2f} y condición = {cond_pred}**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Esfuerzo máximo (UTS)", f"{uts_pred:.1f} MPa")
+        c2.metric("Límite elástico (YS)", f"{ys_pred:.1f} MPa")
+        c3.metric("Registros usados", len(df_train))
+
+        # ---------- Qué tan confiable es ----------
+        st.write(f"Ajuste del modelo (R²): UTS = **{r2_uts:.2f}**, YS = **{r2_ys:.2f}**")
+        if min(r2_uts, r2_ys) < 0.5:
+            st.warning("El %C explica poco de la variación en esta condición (R² bajo). "
+                       "Los aceros de este grupo difieren en otros aspectos (aleantes, "
+                       "tratamiento exacto), así que la predicción es muy aproximada.")
+        c_min, c_max = df_train["C_prom"].min(), df_train["C_prom"].max()
+        if c_pred < c_min or c_pred > c_max:
+            st.warning(f"El %C ingresado está fuera del rango de los datos de esta condición "
+                       f"({c_min:.2f} a {c_max:.2f}). Es una extrapolación y no es confiable.")
+
+        # ---------- Gráfica de datos, modelo y predicción ----------
+        fig = go.Figure()
+        for nombre, modelo in (("UTS", modelo_uts), ("YS", modelo_ys)):
+            fig.add_trace(go.Scatter(x=df_train["C_prom"], y=df_train[nombre],
+                                     mode="markers", name=f"{nombre} (datos)"))
+            xs = [c_min, c_max]
+            ys = modelo.predict(pd.DataFrame({"C_prom": xs}))
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=f"{nombre} (modelo)"))
+        fig.add_trace(go.Scatter(x=[c_pred, c_pred], y=[uts_pred, ys_pred],
+                                 mode="markers", name="Predicción",
+                                 marker=dict(symbol="star", size=14)))
+        fig.update_layout(xaxis_title="%C (punto medio)", yaxis_title="Esfuerzo (MPa)")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption("Regresión lineal simple (una por condición) con el %C como única variable. "
+                   "Se entrena con valores nominales de manual, no con mediciones repetidas. "
+                   "Resultados aproximados, no para diseño.")
+    else:
+        st.error("No hay suficientes datos en esta condición para entrenar el modelo.")
