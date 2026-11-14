@@ -8,6 +8,7 @@ Cómo correrlo:
 El CSV debe estar en la misma carpeta que este archivo.
 """
 
+import base64
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -169,6 +170,68 @@ def resumen_impacto(df_todo, fila):
 
 
 # ============================================================
+# 1c. PORTADA (se muestra en la primera pestaña)
+# ============================================================
+
+# Para que los escudos no dependan de internet, guarda las imágenes en esta misma
+# carpeta con estos nombres. Si no existen, se usan los enlaces de respaldo.
+ESCUDO_UNAM_ARCHIVO = "escudo_unam.png"
+ESCUDO_FI_ARCHIVO = "escudo_fi.png"
+ESCUDO_UNAM_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQOX2QZFR3-Ksq0vPJpXPE2hyBlQnBQDkYEdNH5pn4-XKmh8zvcFF5oV_Y&s=10"
+ESCUDO_FI_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSLBf1_wgvTqmuqxgXTMSQB3wN-W4ugHpTnNVFT9Fi0ZheiqIpg4sykFvxL&s=10"
+
+
+# --- INICIO PORTADA ---
+def imagen_html(archivo, url_respaldo, ancho, alt):
+    """Usa la imagen local si existe; si no, el enlace de respaldo."""
+    ruta = Path(__file__).parent / archivo
+    if ruta.exists():
+        tipo = "image/png" if ruta.suffix.lower() == ".png" else "image/jpeg"
+        origen = f"data:{tipo};base64," + base64.b64encode(ruta.read_bytes()).decode()
+    else:
+        origen = url_respaldo
+    return f'<img src="{origen}" width="{ancho}" alt="{alt}">'
+
+
+def construir_portada():
+    escudo_unam = imagen_html(ESCUDO_UNAM_ARCHIVO, ESCUDO_UNAM_URL, 110, "Escudo UNAM")
+    escudo_fi = imagen_html(ESCUDO_FI_ARCHIVO, ESCUDO_FI_URL, 120, "Escudo FI")
+    return f"""
+<div style="text-align: center; font-family: 'Times New Roman', Times, serif; border: 3px double #1F4E79; padding: 30px; border-radius: 10px; max-width: 800px; margin: 0 auto; background-color: #FAFAFA;">
+  <h1 style="color: #0F2C59; font-size: 26px; margin-bottom: 5px; font-weight: bold; letter-spacing: 1px;">UNIVERSIDAD NACIONAL AUTÓNOMA DE MÉXICO</h1>
+  <table style="width: 100%; border: none; margin: 20px 0; background: transparent;">
+    <tr style="background: transparent;">
+      <td style="width: 25%; text-align: left; border: none; vertical-align: middle;">{escudo_unam}</td>
+      <td style="width: 50%; text-align: center; border: none; vertical-align: middle;">
+        <h2 style="font-size: 20px; color: #1F4E79; margin: 0; font-weight: bold;">FACULTAD DE INGENIERÍA</h2>
+        <h3 style="font-size: 16px; color: #151515; margin: 10px 0 0 0; font-weight: bold; letter-spacing: 1px;">INGENIERÍA EN MATERIALES</h3>
+      </td>
+      <td style="width: 25%; text-align: right; border: none; vertical-align: middle;">{escudo_fi}</td>
+    </tr>
+  </table>
+  <hr style="border: 0; height: 1px; background: #D0D0D0; margin: 30px 0;">
+  <div style="margin: 40px 0;">
+    <p style="font-size: 22px; margin: 0; font-weight: bold; color: #111;">Proyecto 2.</p>
+    <h2 style="font-size: 28px; color: #0F2C59; margin: 10px 0 0 0; font-weight: bold; line-height: 1.3;">Análisis y visualización de propiedades mecánicas de aceros al carbono</h2>
+  </div>
+  <hr style="border: 0; height: 1px; background: #D0D0D0; margin: 30px 0;">
+  <div style="margin: 30px 0;">
+    <p style="font-size: 15px; font-weight: bold; color: #1F4E79; letter-spacing: 1.5px; margin-bottom: 5px;">INTEGRANTES:</p>
+    <p style="font-size: 16px; margin: 3px 0; color: #333;">- Lozano Zuñiga Paris David</p>
+    <p style="font-size: 16px; margin: 3px 0; color: #333;">- Gil Flores Aizdiakova</p>
+    <p style="font-size: 16px; margin: 3px 0; color: #333;">- Romo Ramirez Uriel Esau</p>
+  </div>
+  <div style="margin: 30px 0 40px 0;">
+    <p style="font-size: 15px; font-weight: bold; color: #1F4E79; letter-spacing: 1.5px; margin-bottom: 5px;">PROFESORA:</p>
+    <p style="font-size: 16px; margin: 3px 0; color: #333; font-weight: 500;">- Artemisa Mazón Martínez</p>
+  </div>
+  <p style="font-size: 14px; color: #777; font-style: italic; margin-top: 50px;">20 de noviembre de 2026</p>
+</div>
+"""
+# --- FIN PORTADA ---
+
+
+# ============================================================
 # 2. CONFIGURACIÓN DE LA PÁGINA Y BARRA LATERAL
 # ============================================================
 
@@ -216,11 +279,17 @@ if len(dff) == 0:
     st.warning("Los filtros no dejan ningún registro. Amplía la selección.")
     st.stop()
 
-tabs = st.tabs([
-    "📋 Datos", "📈 %C vs propiedades", "⚙️ Procesamiento",
+tab_portada, *tabs = st.tabs([
+    "🎓 Portada", "📋 Datos", "📈 %C vs propiedades", "⚙️ Procesamiento",
     "🔥 Recocido vs normalizado", "📊 ANOVA", "🔎 Buscador de acero",
     "🤖 Predicción",
 ])
+
+# ============================================================
+# 2b. PESTAÑA: PORTADA
+# ============================================================
+with tab_portada:
+    st.html(construir_portada())
 
 # ============================================================
 # 3. PESTAÑA: DATOS
